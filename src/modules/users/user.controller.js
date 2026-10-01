@@ -1,4 +1,4 @@
-import { signUpService, signInService, signUpwithGmailService, getProfileService } from './user.service.js';
+import { signUpService, signInService, signUpWithGmailService, getProfileService } from './user.service.js';
 
 export const signUp = async (req, res) => {
     try {
@@ -44,13 +44,12 @@ export const getProfile = async (req, res) => {
 export const signUpwithGmail = async (req, res) => {
     try {
         const { idToken } = req.body;
-        
         if (!idToken) {
             return res.status(400).json({ message: "Google ID Token is required" });
         }
 
-        const user = await signUpwithGmailService(idToken);
-        return res.status(201).json({ message: "Gmail login successful", user });
+        const payload = await signUpWithGmailService(idToken);
+        return res.status(201).json({ message: "Gmail login successful", payload });
     } catch (error) {
         return res.status(500).json({ message: error.message, stack: error.stack });
     }

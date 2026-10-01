@@ -2,6 +2,9 @@ import { UserModel } from '../../DB/models/user.model.js';
 import { hashPassword, comparePassword, Encrypt } from '../../security/security.utils.js';
 import { create, findOne } from '../../DB/db.service.js';
 import jwt from "jsonwebtoken";
+import { OAuth2Client } from 'google-auth-library';
+
+const client = new OAuth2Client();
 
 export const signUpService = async ({ fName, lName, email, password, gender, phone }) => {
     const existingUser = await findOne({ model: UserModel, filter: { email } });
@@ -18,34 +21,36 @@ export const signUpService = async ({ fName, lName, email, password, gender, pho
     return createdUsers[0]; 
 };
 
-import jwt from "jsonwebtoken";
-
+// --- Gmail Sign Up Service ---
 export const signUpWithGmailService = async (idToken) => {
-    const decodedGoogleToken = jwt.decode(idToken);
-
-    if (!decodedGoogleToken) {
-        throw new Error("Invalid Google Token");
+    const decoded = await client.verifyIdToken({
+        idToken,
+        audience: "426702860833-eqe6uhptoscngjdksh8fborsblqqfsbi.apps.googleusercontent.com",
+    });
+    
+    const {family_name, given_name, email, profilePicture, email_verified} = decoded.getPayload();
+    let user = await findOne({ model: UserModel, filter: { email: email.toLowerCase() } });
+    if (!user) {
+        user = await Usemodel.create({
+            fName: given_name,
+            lName: family_name,
+            email: email.toLowerCase(),
+            profileImage: profilePicture,
+            isConfirmed: email_verified,
+            provider: "google"
+        });
     }
 
-    const { email, given_name, family_name, picture } = decodedGoogleToken;
-    console.log("Successfully parsed Google User:", { email, given_name, family_name });
-    const access_token = jwt.sign({ email }, "mySuperSecretaccessKey456$%^", {
-        expiresIn: 60,
-        audience: "http://localhost:4000",
-        issuer: "http://localhost:3000",
-        notBefore: 60,
-        noTimestamp: true
+    if (user.provider == "system") {
+        return res.status(400).json({ message: "Email is already registered with a different provider" });
+    }
+     const access_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretaccessKey456$%^", {
+        expiresIn: 60*5,
     });
 
-    const refresh_token = jwt.sign({ email }, "mySuperSecretRefreshKey456$%^", { 
+    const refresh_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretRefreshKey456$%^", { 
         expiresIn: '7d' 
     });
-
-    return { 
-        email, 
-        name: `${given_name} ${family_name}`, 
-        tokens: { access_token, refresh_token } 
-    };
 };
 
 export const signInService = async ({ email, password }) => {
