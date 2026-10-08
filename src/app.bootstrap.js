@@ -14,10 +14,14 @@ const corsOptions = {
 const bootstrap = async () => {
     app.use(cors(corsOptions));
     app.use(express.json());
+    app.use('/uploads', express.static('uploads'));
+
     await ConnectionDB()
 
     app.use('/api/users', userRoutes);
+    
     app.get('/', (req, res) => res.status(200).json({ message: "Welcome on sara7a app" }))
+    
     app.use("*", (req, res, next) => {
         res.status(404).json({
             message: `Url:${req.originalUrl} With Method:${req.method} Not Found`,
@@ -28,4 +32,4 @@ const bootstrap = async () => {
     app.listen(port, () => console.log(`Example app listening on port ${port}!`))
 }
 
-export default bootstrap
+export default bootstrap;

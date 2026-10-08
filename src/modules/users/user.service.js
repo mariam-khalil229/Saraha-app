@@ -3,23 +3,49 @@ import { hashPassword, comparePassword, Encrypt } from '../../security/security.
 import { create, findOne } from '../../DB/db.service.js';
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from 'google-auth-library';
+import { hashSync } from 'bcrypt';
 
 const client = new OAuth2Client();
 
-export const signUpService = async ({ fName, lName, email, password, gender, phone }) => {
-    const existingUser = await findOne({ model: UserModel, filter: { email } });
-    if (existingUser) throw new Error("Email is already registered");
+export const signUpService = async (req, res, next) => {
+    try {
+        const { fName, lName, email, password, age, gender, phone } = req.body;
+        const hashPassword = hashSync(password, 12);
 
-    const hashedPassword = await hashPassword(password);
-    const encryptedPhone = Encrypt(phone);
+        const paths = [];
+        if (req.files?.attachments) {
+            for (const file of req.files.attachments) {
+                paths.push(file.path);
+            }
+        }
 
-    const createdUsers = await create({
-        model: UserModel,
-        data: { fName, lName, email, password, phone: encryptedPhone, gender }
-    });
+        const profileImagePath = req.files?.attachment 
+            ? req.files.attachment[0].path 
+            : ""; 
 
-    return createdUsers[0]; 
-};
+        const user = await UserModel.create({
+            fName,
+            lName,
+            email,
+            password: hashPassword,
+            age,
+            gender,
+            phone, 
+            profileImage: profileImagePath,
+            coverImages: paths
+        })
+       
+        
+        return res.status(201).json({ message: "Done", user });
+
+    } catch (error) {
+        console.log("ACTUAL ERROR:", error); 
+        if (error?.code == 11000) {
+            return res.status(409).json({ message: "email already exists" });
+        }
+        return res.status(500).json({ message: error.message });
+    }
+}
 
 // --- Gmail Sign Up Service ---
 export const signUpWithGmailService = async (idToken) => {
@@ -31,7 +57,7 @@ export const signUpWithGmailService = async (idToken) => {
     const {family_name, given_name, email, profilePicture, email_verified} = decoded.getPayload();
     let user = await findOne({ model: UserModel, filter: { email: email.toLowerCase() } });
     if (!user) {
-        user = await Usemodel.create({
+        user = await UserModel.create({
             fName: given_name,
             lName: family_name,
             email: email.toLowerCase(),
@@ -75,15 +101,7 @@ export const signInService = async ({ email, password }) => {
     return { access_token, refresh_token };
 };
 
-export const getProfileService = async (token) => {
-    const decoded = jwt.verify(token, "mySuperSecretaccessKey456$%^");
-    
-    const user = await findOne({ 
-        model: UserModel, 
-        filter: { email: decoded.email.toLowerCase() } 
-    });
-    
-    if (!user) throw new Error("User not found");
-    
-    return user;
+export const getProfileService = async (req, res, next) => {
+  return res.status(200).json({ message: "Done", user: req.user });
+
 };

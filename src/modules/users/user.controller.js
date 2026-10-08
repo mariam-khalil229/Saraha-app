@@ -1,15 +1,7 @@
 import { signUpService, signInService, signUpWithGmailService, getProfileService } from './user.service.js';
 
-export const signUp = async (req, res) => {
-    try {
-        const user = await signUpService(req.body);
-        return res.status(201).json({ message: "User registered successfully", user });
-    } catch (error) {
-        if (error.message === "Email is already registered") {
-            return res.status(409).json({ message: error.message });
-        }
-        return res.status(500).json({ message: error.message, stack: error.stack });
-    }
+export const signUp = async (req, res, next) => {
+    return await signUpService(req, res, next);
 };
 
 export const signIn = async (req, res) => {
