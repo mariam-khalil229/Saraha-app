@@ -2,6 +2,8 @@
 node_modules/
 uploads/
 .env
+.env.local
+.env.development
 
 logs
 *.log
@@ -16,3 +18,7 @@ pnpm-debug.log*
 
 .DS_Store
 Thumbs.db
+
+coverage/
+dist/
+build/

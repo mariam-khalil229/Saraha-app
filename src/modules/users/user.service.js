@@ -1,12 +1,17 @@
 import { UserModel } from '../../DB/models/user.model.js';
-import { hashPassword, comparePassword, Encrypt } from '../../security/security.utils.js';
-import { create, findOne } from '../../DB/db.service.js';
+import { comparePassword, Encrypt } from '../../security/security.utils.js';
+import { findOne } from '../../service/db.service.js';
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from 'google-auth-library';
 import { hashSync } from 'bcrypt';
-
+import { randomUUID } from 'crypto';
 const client = new OAuth2Client();
 
+// Secrets & Config
+const ACCESS_TOKEN_SECRET = "mySuperSecretaccessKey456$%^";
+const REFRESH_TOKEN_SECRET = "mySuperSecretRefreshKey456$%^";
+
+// --- Sign Up Service ---
 export const signUpService = async (req, res, next) => {
     try {
         const { fName, lName, email, password, age, gender, phone } = req.body;
@@ -33,9 +38,8 @@ export const signUpService = async (req, res, next) => {
             phone, 
             profileImage: profileImagePath,
             coverImages: paths
-        })
+        });
        
-        
         return res.status(201).json({ message: "Done", user });
 
     } catch (error) {
@@ -45,7 +49,38 @@ export const signUpService = async (req, res, next) => {
         }
         return res.status(500).json({ message: error.message });
     }
-}
+};
+
+// --- Update Profile Service ---
+export const updateProfileService = async (req, res, next) => {
+    const { fName, lName, phone, gender, age } = req.body
+    let query = {}
+    if (fName) query.fName = fName
+    if (lName) query.lName = lName
+    if (phone) query.phone = Encrypt(phone)
+    if (gender) query.gender = gender
+    if (age) query.age = age
+    await UserModel.findByIdAndUpdate(req.user.id, query, { new: true })
+    return res.status(200).json({ message: "Done" })
+};
+
+// ---update password service---
+export const updatePasswordService = async (req, res, next) => {
+    const { oldPassword, newPassword } = req.body;
+    const user = await UserModel.findById(req.user.id);
+    if (!user) {
+        return res.status(404).json({ message: "User not found" });
+    }
+    const isPasswordValid = await comparePassword(oldPassword, user.password);
+    if (!isPasswordValid) {
+        return res.status(400).json({ message: "Invalid old password" });
+    }
+    req.user.password = await hashSync(newPassword);
+    req.user.changeCredAt = new Date();
+    req.user.save();
+    await UserModel.findByIdAndUpdate(req.user.id, { password: hashPassword }, { new: true });
+    return res.status(200).json({ message: "Done" });
+};
 
 // --- Gmail Sign Up Service ---
 export const signUpWithGmailService = async (idToken) => {
@@ -54,8 +89,9 @@ export const signUpWithGmailService = async (idToken) => {
         audience: "426702860833-eqe6uhptoscngjdksh8fborsblqqfsbi.apps.googleusercontent.com",
     });
     
-    const {family_name, given_name, email, profilePicture, email_verified} = decoded.getPayload();
+    const { family_name, given_name, email, profilePicture, email_verified } = decoded.getPayload();
     let user = await findOne({ model: UserModel, filter: { email: email.toLowerCase() } });
+    
     if (!user) {
         user = await UserModel.create({
             fName: given_name,
@@ -67,18 +103,22 @@ export const signUpWithGmailService = async (idToken) => {
         });
     }
 
-    if (user.provider == "system") {
-        return res.status(400).json({ message: "Email is already registered with a different provider" });
+    if (user.provider === "system") {
+        throw new Error("Email is already registered with a different provider");
     }
-     const access_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretaccessKey456$%^", {
-        expiresIn: 60*5,
+
+    const access_token = jwt.sign({ id: user._id, email: user.email }, ACCESS_TOKEN_SECRET, {
+        expiresIn: 60 * 5,
     });
 
-    const refresh_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretRefreshKey456$%^", { 
+    const refresh_token = jwt.sign({ id: user._id, email: user.email }, REFRESH_TOKEN_SECRET, { 
         expiresIn: '7d' 
     });
+
+    return { access_token, refresh_token };
 };
 
+// --- Sign In Service ---
 export const signInService = async ({ email, password }) => {
     const user = await findOne({ model: UserModel, filter: { email } });
     if (!user) throw new Error("Invalid email or password");
@@ -86,22 +126,186 @@ export const signInService = async ({ email, password }) => {
     const isPasswordValid = await comparePassword(password, user.password);
     if (!isPasswordValid) throw new Error("Invalid email or password");
 
-    const access_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretaccessKey456$%^", {
-        expiresIn: 60,
-        audience: "http://localhost:4000",
-        issuer: "http://localhost:3000",
-        notBefore: 60,
-        noTimestamp: true
+    const tokenId = randomUUID();
+
+    const access_token = jwt.sign({ id: user._id, email: user.email }, ACCESS_TOKEN_SECRET, {
+        expiresIn: 60 * 5,
+        jwtid: tokenId
     });
 
-    const refresh_token = jwt.sign({ id: user._id, email: user.email }, "mySuperSecretRefreshKey456$%^", { 
-        expiresIn: '7d' 
+    const refresh_token = jwt.sign({ id: user._id, email: user.email }, REFRESH_TOKEN_SECRET, { 
+        expiresIn: '7d' ,
+        jwtid: tokenId
     });
 
     return { access_token, refresh_token };
 };
 
-export const getProfileService = async (req, res, next) => {
-  return res.status(200).json({ message: "Done", user: req.user });
+// ===================shareProfile===================
+export const shareProfile = async (req, res, next) => {
+    const { id } = req.params
 
+    let user = await dbService.findById({
+        model: userModel,
+        id,
+        options: { password: 0 }
+    })
+    if (!user) {
+        throw new Error("use not exist ", { cause: 400 })
+    }
+
+    user.phone = Decrypt(user.phone)
+
+    return res.status(200).json({ message: "Done", user })
+
+};  
+
+// --- Refresh Token Service ---
+export const refreshTokenService = async (req, res, next) => {
+    try {
+        const { refreshToken } = req.headers;
+
+        if (!refreshToken) {
+            return res.status(400).json({ message: "Refresh token header is required" });
+        }
+
+        const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
+
+        if (!decoded?.id) {
+            return res.status(401).json({ message: "Invalid token payload" });
+        }
+
+        const user = await UserModel.findById(decoded.id);
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        const access_token = jwt.sign(
+            { id: user._id, email: user.email },
+            ACCESS_TOKEN_SECRET,
+            { expiresIn: 60 * 5 }
+        );
+
+        return res.status(200).json({
+            message: "Token refreshed successfully",
+            access_token
+        });
+
+    } catch (error) {
+        return res.status(500).json({ message: error.message, stack: error.stack });
+    }
 };
+
+// --- logout Service ---
+export const logoutService = async (req, res, next) => {
+    const {flag} = req.query
+    if (flag && flag === "all") {
+        req.user.changeCredAt = new Date();
+        await req.user.save();
+        await deleteKeys(await keys(`revokeToken::${req.user._id}::*`))
+    
+    }
+    else {
+        await setValue({
+            key: `revokeToken::${req.user._id}::${req.decoded.jti}`,
+            value: `${req.decoded.jti}`,
+            ttl: req.decoded.exp - Math.floor(Date.now() / 1000)
+        });
+    }
+
+    req.user.changeCredAt = new Date();
+    await req.user.save();
+    return res.status(200).json({ message: "Logged out successfully" });
+};
+
+// =================== sendOtp ===================
+export const sendOtp = async (req, res, next) => {
+    const { email } = req.body;
+    
+    const user = await dbService.findOne({
+        model: userModel,
+        filter: { email }
+    });
+    
+    if (user && user.isConfirmed !== false) {
+        throw new Error("User already exists and is confirmed");
+    }
+    
+    const otp = await generate_otp();
+    const otpHash = hashSync(otp, 12);
+    
+    await setValue({
+        key: `otp::${email}`,
+        value: otpHash,
+        ttl: 60 * 20
+    });
+    
+    eventEmitter.emit("confirm_email", async () => {
+        await sendEmail({
+            to: email,
+            subject: "Confirm Email",
+            html: emailTemplate(otp)
+        });
+    });
+    
+    await setValue({
+        key: `otp::max::${email}`,
+        value: 1,
+        ttl: 60 * 60 
+    });
+    
+    return res.status(200).json({ message: "Done" });
+};
+
+// =================== reSendOtp ===================
+export const reSendOtp = async (req, res, next) => {
+    const { email } = req.body
+    const isBlocked_ttl = await ttl(`otp::block::${email}`)
+    if (isBlocked_ttl > 0) throw new Error(`you're blocked, you can resend otp after ${isBlocked_ttl} seconds`)
+    if (isBlocked_ttl < 0) {
+        if (getValue(`otp::max::${email}`) >= 3) {
+            await setValue({
+                key: `otp::max::${email}`,
+                value: 0,
+                ttl: 60 * 5
+            })
+        }
+    }
+    const otpTtl = await ttl(`otp::${email}`)
+    if (otpTtl > 0) throw new Error(`resend otp after ${otpTtl} seconds`)
+
+    const max_opt = await getValue(`otp::max::${email}`)
+    if (max_opt >= 3) {
+        await setValue({
+            key: `otp::block::${email}`,
+            value: "1",
+            ttl: 60 * 10
+        })
+        throw new Error(`you have exceeded the maximum umbers of tries`)
+    }
+    const user = await dbService.findOne({
+        model: userModel,
+        filter: {
+            email,
+            isConfirmed: { $exists: false }
+        }
+    })
+    if (!user) throw new Error("user not exist or already confirmed")
+    const otp = await generate_otp()
+    const otpHash = hashSync(otp, 12)
+    await setValue({
+        key: `otp::${email}`,
+        value: otpHash,
+        ttl: 60 * 20
+    })
+    eventEmitter.emit("confirm_email", async () => {
+        await sendEmail({
+            to: email,
+            subject: "Confirm Email",
+            html: emailTemplate(otp)
+        })
+    })
+    await incr(`otp::max::${email}`)
+    return res.status(200).json({ message: "Done", user })
+}
+

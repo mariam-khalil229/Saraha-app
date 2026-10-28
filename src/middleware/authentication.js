@@ -1,5 +1,5 @@
 import jwt from "jsonwebtoken";
-import { findOne } from '../DB/db.service.js';
+import { findOne } from '../service/db.service.js';
 import { UserModel } from '../DB/models/user.model.js';
 
 export const authentication = async (req, res, next) => {
@@ -21,8 +21,17 @@ export const authentication = async (req, res, next) => {
     })
 
     if (!user) {
-        throw new Error("user not exist ", { cause: 400 })}
+        throw new Error("user not exist ", { cause: 400 })
+    }
 
-    req.user = user;    
+    if (user?.changeCredAt?.getTime() > decoded.iat * 1000) {
+        return res.status(401).json({ message: "Token is invalid due to password change" });
+    }
+
+    if (await ttl(`revokeToken::${user._id}::${decoded.jti}`) > 0) {
+        throw new Error ("invalid token", { cause: 401 })
+    }
+    req.user = user;
+    req.decoded = decoded;    
     next()
 }

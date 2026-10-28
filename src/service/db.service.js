@@ -13,3 +13,8 @@ export const findById = async ({ model, id, options = {} } = {}) => {
 export const findByIdAndUpdate = async ({ model, id, update, options = {} } = {}) => {
     return await model.findByIdAndUpdate(id, update, { new: true, runValidators: true, ...options })
 }
+
+export const findByIdAndDelete = async ({ model, id, options = {} } = {}) => {
+    return await model.findByIdAndDelete(id, options)
+}
+

@@ -2,6 +2,7 @@ import express from 'express';
 import ConnectionDB from './DB/connectionDB.js';
 import userRoutes from './modules/users/user.routes.js';
 import cors from 'cors';
+import ConnectionRedis from './DB/connectionRedis.js';
 
 const app = express();
 const port = 3000;
@@ -17,6 +18,8 @@ const bootstrap = async () => {
     app.use('/uploads', express.static('uploads'));
 
     await ConnectionDB()
+    await ConnectionRedis()
+
 
     app.use('/api/users', userRoutes);
     

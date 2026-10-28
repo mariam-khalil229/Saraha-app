@@ -1,21 +1,36 @@
+import joi from "joi";
 
-export const validation =(Schema) => (req, res, next) => {
-    const errors = [];
-    for (const key of Object.keys(Schema)) {
-        const { error } = Schema [key].validate(req[key], { abortEarly: false });
-        if (error) {
-            error.details.forEach((error) => {
-                errors.push(
-                    message = error.message,
-                    path = error.path [0],
-                    key
-                );
-            });
-            return res.status(400).json({ message: error });
+export const Validation = (schema) => {
+    return (req, res, next) => {
+        const errResult = [];
+        const requestData = {
+            ...req.body,
+            ...req.params,
+            ...req.query,
+            ...(req.file && { file: req.file }),
+            ...(req.files && { files: req.files })
+        };
+
+        for (const key of Object.keys(schema)) {
+            const dataToValidate = req[key] || requestData[key];
+            
+            if (schema[key]) {
+                const { error } = schema[key].validate(dataToValidate, { abortEarly: false });
+                if (error) {
+                    error.details.forEach(err => {
+                        errResult.push({
+                            message: err.message,
+                            path: err.path[0],
+                            key
+                        });
+                    });
+                }
+            }
         }
-    }
-        if (errors.length > 0) {
-            return res.status(400).json({ message: errors });
+
+        if (errResult.length > 0) {
+            return res.status(400).json({ message: "Validation error", error: errResult });
         }
         next();
+    };
 };

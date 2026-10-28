@@ -1,4 +1,12 @@
-import { signUpService, signInService, signUpWithGmailService, getProfileService } from './user.service.js';
+import { 
+    signUpService, 
+    signInService, 
+    signUpWithGmailService, 
+    getProfileService,
+    refreshTokenService 
+} from './user.service.js';
+
+import { shareProfile as shareProfileService } from './user.service.js';
 
 export const signUp = async (req, res, next) => {
     return await signUpService(req, res, next);
@@ -16,21 +24,13 @@ export const signIn = async (req, res) => {
     }
 };
 
-export const getProfile = async (req, res) => {
-    try {
-        const { token } = req.body;
-        if (!token) {
-            return res.status(401).json({ message: "Token is required" });
-        }
+export const getProfile = async (req, res, next) => {
+    return await getProfileService(req, res, next);
+};
 
-        const user = await getProfileService(token);
-        return res.status(200).json({ message: "Done", user });
-    } catch (error) {
-        if (error.message === "User not found") {
-            return res.status(404).json({ message: error.message });
-        }
-        return res.status(500).json({ message: "Invalid or expired token", error: error.message });
-    }
+
+export const shareProfile = async (req, res, next) => {
+    return await shareProfileService(req, res, next);
 };
 
 export const signUpwithGmail = async (req, res) => {
@@ -45,4 +45,8 @@ export const signUpwithGmail = async (req, res) => {
     } catch (error) {
         return res.status(500).json({ message: error.message, stack: error.stack });
     }
+};
+
+export const refreshToken = async (req, res, next) => {
+    return await refreshTokenService(req, res, next);
 };
