@@ -118,13 +118,82 @@ export const signUpWithGmailService = async (idToken) => {
     return { access_token, refresh_token };
 };
 
-// --- Sign In Service ---
+// =================== signInService (Step 1: Check Credentials & Trigger 2FA) ===================
 export const signInService = async ({ email, password }) => {
+    // 1. Check if the account is currently blocked in Redis
+    const blockKey = `login::block::${email}`;
+    const isBlocked = await ttl(blockKey); 
+    if (isBlocked > 0) {
+        throw new Error(`Too many attempts. Try again in ${isBlocked} seconds`, { cause: 429 });
+    }
+
     const user = await findOne({ model: UserModel, filter: { email } });
-    if (!user) throw new Error("Invalid email or password");
+    if (!user) {
+        throw new Error("Invalid email or password");
+    }
 
     const isPasswordValid = await comparePassword(password, user.password);
-    if (!isPasswordValid) throw new Error("Invalid email or password");
+    
+    if (!isPasswordValid) {
+        const attemptsKey = `login::attempts::${email}`;
+        let attempts = await getValue(attemptsKey) || 0;
+        attempts = parseInt(attempts) + 1;
+
+        if (attempts >= 5) {
+            await setValue({ key: blockKey, value: "blocked", ttl: 60 * 15 });
+            throw new Error("Maximum login attempts exceeded. Account blocked for 15 minutes.", { cause: 429 });
+        } else {
+            await setValue({ key: attemptsKey, value: attempts, ttl: 60 * 15 });
+            throw new Error(`Invalid email or password. You have ${5 - attempts} attempts left.`);
+        }
+    }
+
+    await setValue({ key: `login::attempts::${email}`, value: 0, ttl: 1 });
+    const otp = await generate_otp(); 
+    const otpHash = hashSync(otp, 12);
+    
+    await setValue({
+        key: `2fa::${user._id}`,
+        value: otpHash,
+        ttl: 60 * 5 
+    });
+
+    eventEmitter.emit("send_email", async () => {
+        await sendEmail({
+            to: email,
+            subject: "Your Two-Step Verification Code",
+            html: emailTemplate(otp)
+        });
+    });
+
+    return { 
+        message: "Credentials verified. Please check your email for the 2FA code.", 
+        userId: user._id 
+    };
+};
+
+// =================== verify2FAService (Step 2: Verify OTP & Issue Tokens) ===================
+export const verify2FAService = async ({ userId, otp }) => {
+    // 1. Retrieve the hashed OTP from Redis
+    const otpKey = `2fa::${userId}`;
+    const storedOtpHash = await getValue(otpKey);
+
+    if (!storedOtpHash) {
+        throw new Error("OTP expired or invalid. Please log in again.", { cause: 400 });
+    }
+
+    const { compareSync } = await import('bcrypt'); 
+    const isValidOtp = compareSync(otp, storedOtpHash);
+
+    if (!isValidOtp) {
+        throw new Error("Invalid 2FA code", { cause: 400 });
+    }
+    await setValue({ key: otpKey, value: "", ttl: 1 });
+
+    const user = await findOne({ model: UserModel, filter: { _id: userId } });
+    if (!user) {
+        throw new Error("User not found", { cause: 404 });
+    }
 
     const tokenId = randomUUID();
 
@@ -134,7 +203,7 @@ export const signInService = async ({ email, password }) => {
     });
 
     const refresh_token = jwt.sign({ id: user._id, email: user.email }, REFRESH_TOKEN_SECRET, { 
-        expiresIn: '7d' ,
+        expiresIn: '7d',
         jwtid: tokenId
     });
 
