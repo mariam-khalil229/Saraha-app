@@ -52,9 +52,9 @@ const userSchema = new mongoose.Schema({
         default: "system"
     },
     isConfirmed: {
-        type: Boolean,
-        default: false
-    }
+        type: Boolean
+    },
+    changeCredentialsAt: Date
 }, {
     timestamps: true,
     strict: true,

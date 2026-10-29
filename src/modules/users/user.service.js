@@ -1,21 +1,44 @@
 import { UserModel } from '../../DB/models/user.model.js';
-import { comparePassword, Encrypt } from '../../security/security.utils.js';
-import { findOne } from '../../service/db.service.js';
+import { comparePassword, Encrypt, Decrypt } from '../../common/security/security.utils.js';
+import { findOne, findById} from '../../service/db.service.js';
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from 'google-auth-library';
-import { hashSync } from 'bcrypt';
+import { hashSync, compareSync } from 'bcrypt';
 import { randomUUID } from 'crypto';
+import { generateOTP } from '../../common/service/sendEmail.js';
+import { setValue, getValue, ttl, deleteKeys, keys, incr } from '../../service/redis.service.js';
+import sendEmail from '../../common/service/sendEmail.js';
+import { eventEmitter } from '../../common/utils/events.js';
+import { emailTemplate } from '../../common/utils/emailTemplate.js';
+import { sendOtp as sendOtpHelper } from './user.helper.js';
+
 const client = new OAuth2Client();
 
 // Secrets & Config
-const ACCESS_TOKEN_SECRET = "mySuperSecretaccessKey456$%^";
-const REFRESH_TOKEN_SECRET = "mySuperSecretRefreshKey456$%^";
+const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET;
+const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET;
 
 // --- Sign Up Service ---
 export const signUpService = async (req, res, next) => {
     try {
         const { fName, lName, email, password, age, gender, phone } = req.body;
         const hashPassword = hashSync(password, 12);
+        const otp = await generateOTP();
+        const otpHash = hashSync(otp, 12);
+        
+        await setValue({
+            key: `otp::${email}`,
+            value: otpHash,
+            ttl: 60 * 20
+        });
+
+        eventEmitter.emit("confirmationEmail", async () => {
+            await sendEmail({
+                to: email,
+                subject: "Confirm Email",
+                html: emailTemplate(otp),
+            });
+        });
 
         const paths = [];
         if (req.files?.attachments) {
@@ -75,10 +98,10 @@ export const updatePasswordService = async (req, res, next) => {
     if (!isPasswordValid) {
         return res.status(400).json({ message: "Invalid old password" });
     }
-    req.user.password = await hashSync(newPassword);
-    req.user.changeCredAt = new Date();
-    req.user.save();
-    await UserModel.findByIdAndUpdate(req.user.id, { password: hashPassword }, { new: true });
+    req.user.password = hashSync(newPassword, 12);
+    req.user.changeCredentialsAt = new Date();
+    await req.user.save();
+    
     return res.status(200).json({ message: "Done" });
 };
 
@@ -86,7 +109,7 @@ export const updatePasswordService = async (req, res, next) => {
 export const signUpWithGmailService = async (idToken) => {
     const decoded = await client.verifyIdToken({
         idToken,
-        audience: "426702860833-eqe6uhptoscngjdksh8fborsblqqfsbi.apps.googleusercontent.com",
+        audience: process.env.GOOGLE_CLIENT_ID,
     });
     
     const { family_name, given_name, email, profilePicture, email_verified } = decoded.getPayload();
@@ -120,7 +143,6 @@ export const signUpWithGmailService = async (idToken) => {
 
 // =================== signInService (Step 1: Check Credentials & Trigger 2FA) ===================
 export const signInService = async ({ email, password }) => {
-    // 1. Check if the account is currently blocked in Redis
     const blockKey = `login::block::${email}`;
     const isBlocked = await ttl(blockKey); 
     if (isBlocked > 0) {
@@ -149,7 +171,7 @@ export const signInService = async ({ email, password }) => {
     }
 
     await setValue({ key: `login::attempts::${email}`, value: 0, ttl: 1 });
-    const otp = await generate_otp(); 
+    const otp = await generateOTP(); 
     const otpHash = hashSync(otp, 12);
     
     await setValue({
@@ -174,7 +196,6 @@ export const signInService = async ({ email, password }) => {
 
 // =================== verify2FAService (Step 2: Verify OTP & Issue Tokens) ===================
 export const verify2FAService = async ({ userId, otp }) => {
-    // 1. Retrieve the hashed OTP from Redis
     const otpKey = `2fa::${userId}`;
     const storedOtpHash = await getValue(otpKey);
 
@@ -182,7 +203,6 @@ export const verify2FAService = async ({ userId, otp }) => {
         throw new Error("OTP expired or invalid. Please log in again.", { cause: 400 });
     }
 
-    const { compareSync } = await import('bcrypt'); 
     const isValidOtp = compareSync(otp, storedOtpHash);
 
     if (!isValidOtp) {
@@ -212,22 +232,36 @@ export const verify2FAService = async ({ userId, otp }) => {
 
 // ===================shareProfile===================
 export const shareProfile = async (req, res, next) => {
-    const { id } = req.params
+    const { id } = req.params;
 
-    let user = await dbService.findById({
-        model: userModel,
+    let user = await findById({
+        model: UserModel,
         id,
         options: { password: 0 }
-    })
+    });
+    
     if (!user) {
-        throw new Error("use not exist ", { cause: 400 })
+        throw new Error("user not exist ", { cause: 400 });
     }
 
-    user.phone = Decrypt(user.phone)
+    user.phone = Decrypt(user.phone);
 
-    return res.status(200).json({ message: "Done", user })
-
+    return res.status(200).json({ message: "Done", user });
 };  
+
+// =================== getProfile ===================
+export const getProfile = async (req, res, next) => {
+    const user = await findOne({ 
+        model: UserModel, 
+        filter: { _id: req.user._id } 
+    });
+
+    if (!user) {
+        throw new Error("User not found", { cause: 404 });
+    }
+
+    return res.status(200).json({ message: "Done", user });
+};
 
 // --- Refresh Token Service ---
 export const refreshTokenService = async (req, res, next) => {
@@ -269,7 +303,7 @@ export const refreshTokenService = async (req, res, next) => {
 export const logoutService = async (req, res, next) => {
     const {flag} = req.query
     if (flag && flag === "all") {
-        req.user.changeCredAt = new Date();
+        req.user.changeCredentialsAt = new Date();
         await req.user.save();
         await deleteKeys(await keys(`revokeToken::${req.user._id}::*`))
     
@@ -282,7 +316,7 @@ export const logoutService = async (req, res, next) => {
         });
     }
 
-    req.user.changeCredAt = new Date();
+    req.user.changeCredentialsAt = new Date();
     await req.user.save();
     return res.status(200).json({ message: "Logged out successfully" });
 };
@@ -291,8 +325,8 @@ export const logoutService = async (req, res, next) => {
 export const sendOtp = async (req, res, next) => {
     const { email } = req.body;
     
-    const user = await dbService.findOne({
-        model: userModel,
+    const user = await findOne({
+        model: UserModel,
         filter: { email }
     });
     
@@ -300,7 +334,7 @@ export const sendOtp = async (req, res, next) => {
         throw new Error("User already exists and is confirmed");
     }
     
-    const otp = await generate_otp();
+    const otp = await generateOTP();
     const otpHash = hashSync(otp, 12);
     
     await setValue({
@@ -312,7 +346,7 @@ export const sendOtp = async (req, res, next) => {
     eventEmitter.emit("confirm_email", async () => {
         await sendEmail({
             to: email,
-            subject: "Confirm Email",
+            subject: "Verify Your Email - Sara7a",
             html: emailTemplate(otp)
         });
     });
@@ -328,53 +362,67 @@ export const sendOtp = async (req, res, next) => {
 
 // =================== reSendOtp ===================
 export const reSendOtp = async (req, res, next) => {
-    const { email } = req.body
-    const isBlocked_ttl = await ttl(`otp::block::${email}`)
-    if (isBlocked_ttl > 0) throw new Error(`you're blocked, you can resend otp after ${isBlocked_ttl} seconds`)
-    if (isBlocked_ttl < 0) {
-        if (getValue(`otp::max::${email}`) >= 3) {
-            await setValue({
-                key: `otp::max::${email}`,
-                value: 0,
-                ttl: 60 * 5
-            })
-        }
-    }
-    const otpTtl = await ttl(`otp::${email}`)
-    if (otpTtl > 0) throw new Error(`resend otp after ${otpTtl} seconds`)
+    const { email } = req.body;
+    await sendOtpHelper({email, isConfirmed: false});
+    return res.status(200).json({ message: "Done" });
+};
 
-    const max_opt = await getValue(`otp::max::${email}`)
-    if (max_opt >= 3) {
-        await setValue({
-            key: `otp::block::${email}`,
-            value: "1",
-            ttl: 60 * 10
-        })
-        throw new Error(`you have exceeded the maximum umbers of tries`)
-    }
-    const user = await dbService.findOne({
-        model: userModel,
-        filter: {
-            email,
-            isConfirmed: { $exists: false }
-        }
-    })
-    if (!user) throw new Error("user not exist or already confirmed")
-    const otp = await generate_otp()
-    const otpHash = hashSync(otp, 12)
-    await setValue({
-        key: `otp::${email}`,
-        value: otpHash,
-        ttl: 60 * 20
-    })
-    eventEmitter.emit("confirm_email", async () => {
-        await sendEmail({
-            to: email,
-            subject: "Confirm Email",
-            html: emailTemplate(otp)
-        })
-    })
-    await incr(`otp::max::${email}`)
-    return res.status(200).json({ message: "Done", user })
-}
+// =================== confirmEmail ===================
+export const confirmEmail = async (req, res, next) => {
+    const { email, otp } = req.body;
 
+    const otpValue = await getValue(`otp::${email}`);
+    if (!otpValue) {
+        throw new Error("OTP expired or invalid. Please request a new OTP.", { cause: 400 });
+    }
+    
+    if (!compareSync(otp, otpValue)) {
+        throw new Error("Invalid OTP. Please try again.", { cause: 400 });
+    }
+
+    const user = await UserModel.findOneAndUpdate(
+        { email, isConfirmed: { $exists: false } },
+        { isConfirmed: true },
+        { new: true }
+    );
+
+    if (!user) {
+        throw new Error("User not found", { cause: 404 });
+    }
+    await deleteKeys(`otp::${email}`);
+    return res.status(200).json({ message: "Email confirmed successfully" });
+};
+
+// =================== forgotPassword ===================
+export const forgotPassword = async (req, res, next) => {
+    const { email} = req.body;
+    await sendOtpHelper({email, isConfirmed: true}); 
+    return res.status(200).json({ message: "Email confirmed successfully" });
+};
+
+// =================== resetPassword ===================
+export const resetPassword = async (req, res, next) => {
+    const { email, code, password } = req.body;
+    const otpHash = await getValue(`otp::${email}`);
+    if (!otpHash) {
+        throw new Error(`The OTP is expired, please request a new one`, { cause: 400 });
+    }
+
+    if (!compareSync(code, otpHash)) {
+        throw new Error(`The OTP is invalid, please try again`, { cause: 400 });
+    }
+
+    const user = await UserModel.findOneAndUpdate(
+        { email, isConfirmed: true }, // Filter
+        { password: hashSync(password, 12) }, // Update
+        { new: true } // Options
+    );
+    
+    if (!user) {
+        throw new Error("User does not exist or is not confirmed", { cause: 404 });
+    }
+
+    await deleteKeys(`otp::${email}`);
+    
+    return res.status(200).json({ message: "Password reset successfully" });
+};

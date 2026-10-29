@@ -1,6 +1,6 @@
 import joi from "joi";
 
-export const Validation = (schema) => {
+export const validation = (schema) => {
     return (req, res, next) => {
         const errResult = [];
         const requestData = {

@@ -1,4 +1,4 @@
-import {redis_client} from '../DB/connectionRedis.js'
+import {redis_client} from '../DB/connection.redis.js'
 
 export const setValue = async ({key, value, ttl} = {}) => {
     try {
@@ -50,7 +50,7 @@ export const exists = async (key) => {
     }
 }
 
-export const deleteKey = async (key) => {
+export const deleteKeys = async (key) => {
     try {
         if (!key?.length) {return 0}
         return await redis_client.del(key);

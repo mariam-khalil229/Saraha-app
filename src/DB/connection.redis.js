@@ -1,13 +1,20 @@
-import { createClient } from "redis"
+import { createClient } from "redis";
 
-const redis_client = createClient({
-  url: "rediss://default:gQAAAAAAA64qAAIgcDFjNDJhYTgyYWZiZmE0NWU5OGFjNjNiZGJiN2RjYWJkMw@native-flea-241194.upstash.io:6379"
+export const redis_client = createClient({
+   url: process.env.REDIS_URL
 });
 
 redis_client.on("error", function(err) {
-  throw err;
+  console.error("Redis error:", err);
 });
-await redis_client.connect()
-await redis_client.set('foo','bar');
 
-await redis_client.disconnect();
+const ConnectionRedis = async () => {
+    try {
+        await redis_client.connect();
+        console.log("Redis connected successfully");
+    } catch (error) {
+        console.error("Failed to connect to Redis:", error);
+    }
+};
+
+export default ConnectionRedis;
